@@ -45,6 +45,8 @@ Open the URL on **any phone or tablet** and you get a full **trackpad + keyboard
   - Text snippets · **App / link / deep-link launch** (pick from your installed apps, with icons)
   - **Multi-step macros** (key → delay → text → launch, in sequence)
   - Per-button **icons & colors**, **drag-to-reorder**, move between folders
+  - → covers much of what a hardware **Stream Deck** does — on a device you already own, for free
+- 🔊 **System controls** — **volume** up / down / mute and **screen brightness**, right from the deck (with the native macOS HUD)
 - 🔁 **Deck synced across devices** — the Mac stores it, so iPhone & iPad share the same deck
 - 🎨 **Polished UI** — LG-inspired theme, **light / dark / system** toggle, adjustable sensitivity
 - 🛰️ **Always-on local server** — runs via `launchd`; auto-starts at login, auto-restarts. No Xcode needed after setup.

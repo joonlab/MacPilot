@@ -249,6 +249,11 @@
     renderDeck();
   });
 
+  // 음량 / 밝기
+  document.querySelectorAll("#media-bar button").forEach((b) => {
+    b.addEventListener("click", () => send({ t: b.dataset.m, dir: b.dataset.d }));
+  });
+
   function runItem(item) {
     if (item.type === "shortcut") send({ t: "key", keyCode: item.keyCode, mods: item.mods || [] });
     else if (item.type === "text") send({ t: "text", text: item.text || "" });

@@ -58,6 +58,19 @@ enum EventInjector {
             gesture(command.dir ?? "")
         case "zoom":
             zoom(command.dir ?? "")
+        case "volume":
+            switch command.dir {
+            case "up":   MediaKeys.press(MediaKeys.soundUp)
+            case "down": MediaKeys.press(MediaKeys.soundDown)
+            case "mute": MediaKeys.press(MediaKeys.mute)
+            default: break
+            }
+        case "brightness":
+            switch command.dir {
+            case "up":   MediaKeys.press(MediaKeys.brightnessUp)
+            case "down": MediaKeys.press(MediaKeys.brightnessDown)
+            default: break
+            }
         case "hello":
             break
         default:

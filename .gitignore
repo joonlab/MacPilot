@@ -20,3 +20,4 @@ xcuserdata/
 # 미사용(초기 네이티브 iOS 시도 — 현재 웹 클라이언트로 대체됨)
 iOSApp/
 Shared/
+project.local.yml
