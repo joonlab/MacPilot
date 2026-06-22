@@ -131,6 +131,41 @@ project.yml               XcodeGen project definition
 deploy.sh                 build → ~/Applications → launchd restart
 ```
 
+## Windows support (experimental)
+
+A separate **Windows helper** (C# / .NET 9) lives under [`WindowsHelper/`](WindowsHelper/) and reuses the
+**same web client and WebSocket protocol** — the macOS build is untouched. It runs as a tray app:
+a `TcpListener` HTTP+WebSocket server + Win32 `SendInput` injection, **zero runtime NuGet dependencies**.
+
+- 👉 Build / run / firewall / troubleshooting: **[docs/WINDOWS.md](docs/WINDOWS.md)**
+- 👉 Port strategy & design rationale: **[docs/WINDOWS_MIGRATION_PLAN.md](docs/WINDOWS_MIGRATION_PLAN.md)**
+
+```powershell
+dotnet build .\WindowsHelper\MacPilot.Windows.sln -c Release
+dotnet test  .\WindowsHelper\MacPilot.Windows.sln -c Release
+dotnet run --project .\WindowsHelper\src\MacPilot.Windows
+```
+
+### Mac / Windows feature parity
+
+| Feature | macOS | Windows |
+|---|---|---|
+| Trackpad move / drag / click / double-click | ✅ | ✅ |
+| Two-finger scroll | ✅ | ✅ (direction tunable) |
+| Keyboard shortcuts (⌘→Ctrl mapping) | ✅ | ✅ |
+| Unicode text (Korean / emoji) | ✅ | ✅ |
+| Macros, app/link launch | ✅ | ✅ |
+| Installed-app picker | ✅ (.app) | ⚠️ Start-Menu .lnk (no UWP yet) |
+| Volume up / down / mute | ✅ | ✅ |
+| Screen brightness | ✅ | ⚠️ laptop panel only (WMI, best-effort) |
+| 3-finger gestures / pinch-zoom | ✅ | ⚠️ best-effort key mappings (Win+Tab / Ctrl+Win+←→ / Ctrl±) |
+| Always-on server | launchd | tray app (+ optional Startup shortcut, see scripts/) |
+| Optional PIN pairing | n/a | ✅ `--pin` (off by default; no client change) |
+| Inject into elevated/secure windows | n/a | ❌ blocked by Windows UIPI |
+
+> Windows helper is **LAN/localhost only and unauthenticated by default**, same as macOS. See
+> [docs/WINDOWS.md](docs/WINDOWS.md) for the firewall note and security guidance.
+
 ## Security
 
 LAN-only and **unauthenticated by default** — anyone on the same Wi-Fi can connect.
