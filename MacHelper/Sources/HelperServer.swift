@@ -10,6 +10,7 @@ final class HelperServer: ObservableObject {
     @Published var isRunning = false
     @Published var httpURL = ""
     @Published var ipFallback = ""
+    @Published var tailscaleURL = ""   // 외부(다른 네트워크·셀룰러)에서도 되는 고정 주소
     @Published var activeClients = 0
     @Published var accessibilityGranted = false
 
@@ -41,6 +42,7 @@ final class HelperServer: ObservableObject {
         // 권한 상태가 항상 최신으로 보이도록 주기적으로 갱신
         accessibilityTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
             self?.refreshAccessibility()
+            self?.updateTailscaleURL()   // Tailscale 은 나중에 붙을 수 있어 주기적으로 갱신
         }
         // 앱 목록(아이콘 렌더)을 시작 직후 1회 미리 빌드→캐시. 이후 getApps 는 메인 블록 없이 즉시 응답.
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { _ = AppList.json() }
@@ -198,6 +200,12 @@ final class HelperServer: ObservableObject {
         } else {
             ipFallback = ""
         }
+        updateTailscaleURL()
+    }
+
+    private func updateTailscaleURL() {
+        let new = NetworkInfo.tailscaleIPv4().map { "http://\($0):\(port)" } ?? ""
+        if new != tailscaleURL { tailscaleURL = new }
     }
 
     // MARK: - 손쉬운 사용(Accessibility) 권한
@@ -220,6 +228,11 @@ final class HelperServer: ObservableObject {
     func copyURL() {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(httpURL, forType: .string)
+    }
+
+    func copy(_ string: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(string, forType: .string)
     }
 
     // MARK: - 진단 로깅 (/tmp/macpilot-cmd.log)

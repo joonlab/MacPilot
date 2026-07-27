@@ -104,6 +104,15 @@ open MacPilot.xcodeproj
 
 Builds a Release app into `~/Applications` and installs a **launchd LaunchAgent** so it starts at login and auto-restarts — **you never need to open Xcode again.** See **[SERVER.md](SERVER.md)** for management commands.
 
+### Access it from another network (venue Wi-Fi, cellular)
+
+The `.local` / LAN address only works when the phone is on the **same Wi-Fi** — and public
+networks often block mDNS and isolate clients, so it fails on the road. Run
+[Tailscale](https://tailscale.com) on **both the Mac and the phone** (same account) and the
+menu-bar app also shows a **Tailscale address** (a stable `100.x.y.z:8765`) that connects
+device-to-device, encrypted, from **any** network — without exposing anything to the public
+internet. It's the recommended way to use MacPilot while traveling.
+
 ## Gesture reference
 
 | Gesture (on phone trackpad) | Action on Mac |

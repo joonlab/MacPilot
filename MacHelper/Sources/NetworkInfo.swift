@@ -37,4 +37,33 @@ enum NetworkInfo {
 
         return candidates["en0"] ?? candidates["en1"] ?? candidates.values.first
     }
+
+    /// Tailscale IPv4 (100.64.0.0/10 CGNAT 대역). 다른 네트워크·셀룰러에서도 되는 고정 주소.
+    static func tailscaleIPv4() -> String? {
+        var ifaddr: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&ifaddr) == 0 else { return nil }
+        defer { freeifaddrs(ifaddr) }
+
+        var pointer = ifaddr
+        while let ptr = pointer {
+            defer { pointer = ptr.pointee.ifa_next }
+            let flags = Int32(ptr.pointee.ifa_flags)
+            guard let addr = ptr.pointee.ifa_addr,
+                  (flags & IFF_UP) != 0,
+                  addr.pointee.sa_family == UInt8(AF_INET)
+            else { continue }
+
+            var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            getnameinfo(addr, socklen_t(addr.pointee.sa_len),
+                        &host, socklen_t(host.count),
+                        nil, 0, NI_NUMERICHOST)
+            let ip = String(cString: host)
+            let parts = ip.split(separator: ".")
+            if parts.count == 4, parts[0] == "100",
+               let second = Int(parts[1]), (64 ... 127).contains(second) {
+                return ip
+            }
+        }
+        return nil
+    }
 }

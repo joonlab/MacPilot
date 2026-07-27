@@ -46,6 +46,30 @@ struct MenuContentView: View {
                         .textSelection(.enabled)
                 }
 
+                // 외부(다른 네트워크·셀룰러) 접속용 Tailscale 주소
+                if !server.tailscaleURL.isEmpty {
+                    Divider()
+                    Text("🌐 외부에서 접속 (Tailscale)")
+                        .font(.caption).bold()
+                    Text("호텔·셀룰러 등 다른 네트워크에서도 접속 · 양쪽 Tailscale 켜기")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    if let qr = Self.makeQR(server.tailscaleURL) {
+                        Image(nsImage: qr)
+                            .interpolation(.none)
+                            .resizable()
+                            .frame(width: 120, height: 120)
+                            .frame(maxWidth: .infinity, alignment: .center)
+                    }
+                    HStack {
+                        Text(server.tailscaleURL)
+                            .font(.system(.caption, design: .monospaced))
+                            .textSelection(.enabled)
+                        Spacer()
+                        Button("복사") { server.copy(server.tailscaleURL) }
+                    }
+                }
+
                 Label(server.activeClients > 0 ? "연결됨: \(server.activeClients)대" : "대기 중",
                       systemImage: server.activeClients > 0 ? "iphone.radiowaves.left.and.right" : "iphone.slash")
                     .font(.callout)
