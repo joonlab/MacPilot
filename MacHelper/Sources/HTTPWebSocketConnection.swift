@@ -4,25 +4,46 @@ import Network
 
 /// 번들 정적 자산을 시작 시 1회만 메모리에 적재 → 요청마다 디스크 I/O 없음.
 /// (현장에서 여러 기기가 동시에 페이지를 받아도 즉시 응답)
+/// 개발 오버라이드: `~/Library/Application Support/MacPilot/web/` 에 같은 이름의 파일이 있으면
+/// 번들 캐시 대신 그 파일을 서빙한다 → 웹(HTML/JS/CSS)만 고칠 땐 재빌드 없이 반영.
+/// (ad-hoc 서명 사용자는 재빌드 = 손쉬운 사용 권한 리셋이라 특히 유용)
+/// 동기화 예: rsync -a --delete MacHelper/Web/ ~/Library/"Application Support"/MacPilot/web/
 private enum AssetCache {
-    struct Item { let data: Data; let mime: String }
+    struct Item { let file: String; let data: Data; let mime: String }
+
+    static let overrideDir = FileManager.default
+        .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("MacPilot/web", isDirectory: true)
+
     static let table: [String: Item] = {
-        func load(_ name: String, _ ext: String, _ mime: String) -> Item? {
-            guard let url = Bundle.main.url(forResource: name, withExtension: ext),
+        func load(_ file: String, _ mime: String) -> Item? {
+            guard let dot = file.lastIndex(of: ".") else { return nil }
+            let stem = String(file[..<dot])
+            let ext = String(file[file.index(after: dot)...])
+            guard let url = Bundle.main.url(forResource: stem, withExtension: ext),
                   let data = try? Data(contentsOf: url) else { return nil }
-            return Item(data: data, mime: mime)
+            return Item(file: file, data: data, mime: mime)
         }
         var t: [String: Item] = [:]
-        if let a = load("index", "html", "text/html; charset=utf-8") { t["/"] = a; t["/index.html"] = a }
-        if let a = load("app", "js", "application/javascript; charset=utf-8") { t["/app.js"] = a }
-        if let a = load("style", "css", "text/css; charset=utf-8") { t["/style.css"] = a }
-        if let a = load("logo", "png", "image/png") {
+        if let a = load("index.html", "text/html; charset=utf-8") { t["/"] = a; t["/index.html"] = a }
+        if let a = load("app.js", "application/javascript; charset=utf-8") { t["/app.js"] = a }
+        if let a = load("style.css", "text/css; charset=utf-8") { t["/style.css"] = a }
+        if let a = load("logo.png", "image/png") {
             for p in ["/logo.png", "/favicon.ico", "/apple-touch-icon.png", "/apple-touch-icon-precomposed.png"] { t[p] = a }
         }
-        if let a = load("logo-mark", "png", "image/png") { t["/logo-mark.png"] = a }
-        if let a = load("logo-mark-dark", "png", "image/png") { t["/logo-mark-dark.png"] = a }
+        if let a = load("logo-mark.png", "image/png") { t["/logo-mark.png"] = a }
+        if let a = load("logo-mark-dark.png", "image/png") { t["/logo-mark-dark.png"] = a }
         return t
     }()
+
+    /// 경로에 대한 응답. 오버라이드 파일이 있으면 그걸 우선(개발용), 없으면 메모리 캐시.
+    static func item(for cleanPath: String) -> Item? {
+        guard let base = table[cleanPath] else { return nil }
+        if let data = try? Data(contentsOf: overrideDir.appendingPathComponent(base.file)) {
+            return Item(file: base.file, data: data, mime: base.mime)
+        }
+        return base
+    }
 }
 
 /// 단일 TCP 연결을 받아 (1) 정적 파일 HTTP 응답 또는 (2) WebSocket 업그레이드를
@@ -204,7 +225,7 @@ final class HTTPWebSocketConnection {
     private func serveStatic(path: String) {
         let clean = path.split(separator: "?").first.map(String.init) ?? path
         idleWork?.cancel()
-        guard let item = AssetCache.table[clean] else {
+        guard let item = AssetCache.item(for: clean) else {
             sendSimple(status: "404 Not Found", body: "Not Found"); return
         }
 
