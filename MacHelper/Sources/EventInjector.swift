@@ -86,7 +86,8 @@ enum EventInjector {
 
     /// 이동. 버튼이 눌려 있으면 드래그(mouseDragged), 아니면 단순 이동(mouseMoved).
     private static func move(dx: Double, dy: Double) {
-        let target = clampToDisplays(CGPoint(x: currentLocation().x + dx, y: currentLocation().y + dy))
+        let cur = currentLocation()   // 위치 조회는 한 번만 (이벤트당 syscall 절감)
+        let target = clampToDisplays(CGPoint(x: cur.x + dx, y: cur.y + dy))
         if isMouseDown {
             let dragType: CGEventType = downButton == .right ? .rightMouseDragged : .leftMouseDragged
             postMouse(dragType, at: target, button: downButton, clickState: 1)

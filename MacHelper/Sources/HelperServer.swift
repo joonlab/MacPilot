@@ -86,7 +86,15 @@ final class HelperServer: ObservableObject {
     func start() {
         do {
             guard let nwPort = NWEndpoint.Port(rawValue: port) else { return }
-            let listener = try NWListener(using: .tcp, on: nwPort)
+            // TCP_NODELAY: Nagle 이 소형 WS 프레임(move)을 묶어 보내면 커서가 덩어리져 보인다.
+            // 체감 지연·부드러움에 가장 큰 영향을 주는 설정.
+            let tcpOptions = NWProtocolTCP.Options()
+            tcpOptions.noDelay = true
+            tcpOptions.enableKeepalive = true
+            tcpOptions.keepaliveIdle = 30
+            let params = NWParameters(tls: nil, tcp: tcpOptions)
+            params.serviceClass = .responsiveData   // 인터랙티브 트래픽 우선순위
+            let listener = try NWListener(using: params, on: nwPort)
 
             listener.stateUpdateHandler = { [weak self] state in
                 DispatchQueue.main.async {
