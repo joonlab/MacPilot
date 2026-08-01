@@ -28,9 +28,13 @@ private enum AssetCache {
         if let a = load("index.html", "text/html; charset=utf-8") { t["/"] = a; t["/index.html"] = a }
         if let a = load("app.js", "application/javascript; charset=utf-8") { t["/app.js"] = a }
         if let a = load("style.css", "text/css; charset=utf-8") { t["/style.css"] = a }
-        if let a = load("logo.png", "image/png") {
-            for p in ["/logo.png", "/favicon.ico", "/apple-touch-icon.png", "/apple-touch-icon-precomposed.png"] { t[p] = a }
+        if let a = load("manifest.webmanifest", "application/manifest+json") { t["/manifest.webmanifest"] = a }
+        if let a = load("logo.png", "image/png") { t["/logo.png"] = a; t["/favicon.ico"] = a }
+        if let a = load("icon-180.png", "image/png") {
+            for p in ["/apple-touch-icon.png", "/apple-touch-icon-precomposed.png", "/icon-180.png"] { t[p] = a }
         }
+        if let a = load("icon-192.png", "image/png") { t["/icon-192.png"] = a }
+        if let a = load("icon-512.png", "image/png") { t["/icon-512.png"] = a }
         if let a = load("logo-mark.png", "image/png") { t["/logo-mark.png"] = a }
         if let a = load("logo-mark-dark.png", "image/png") { t["/logo-mark-dark.png"] = a }
         return t
