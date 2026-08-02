@@ -39,13 +39,14 @@
 
   // ───────── 설정 (감도 등, 기기별 localStorage) ─────────
   const SETTINGS_KEY = "macpilot.settings.v1";
-  const SETTINGS_DEFAULTS = { moveSpeed: 1.1, accel: 0.05, scrollSpeed: 1.0, scrollDir: 1, theme: "dark" };
+  const SETTINGS_DEFAULTS = { moveSpeed: 1.1, accel: 0.05, scrollSpeed: 1.0, scrollDir: 1, theme: "dark", sheetPos: 0, sheetOpenPos: 0 };
   let settings = loadSettings();
   function loadSettings() {
     try { const r = localStorage.getItem(SETTINGS_KEY); if (r) return Object.assign({}, SETTINGS_DEFAULTS, JSON.parse(r)); } catch (e) {}
     return Object.assign({}, SETTINGS_DEFAULTS);
   }
   function saveSettings() { try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch (e) {} }
+  function clampNum(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 
   // 테마 적용 (system 이면 기기 설정 따라감) + 로고도 테마에 맞게 교체
   const themeMQ = window.matchMedia("(prefers-color-scheme: dark)");
@@ -116,22 +117,37 @@
   const sheetEl = document.getElementById("tp-sheet");
   const sheetHandle = document.getElementById("tp-handle");
   const HANDLE_H = 46;
-  let sheetOpen = true, sheetCurOff = 0, sheetDrag = null;
+  // 시트 스냅 지점: 0=풀화면 트랙패드, 0.45/0.7=부분(위로 덱/키보드 노출), 1=닫힘(핸들만)
+  const SHEET_DETENTS = [0, 0.45, 0.7, 1];
+  let sheetPos = clampNum(settings.sheetPos != null ? settings.sheetPos : 0, 0, 1);
+  let sheetCurOff = 0, sheetDrag = null;
 
+  function sheetOpenNow() { return sheetPos < 1; }
   function closedOffset() { return Math.max(mainEl.clientHeight - HANDLE_H, 0); }
   function applySheet(off, animate) {
     sheetCurOff = off;
     sheetEl.style.transition = animate ? "transform .25s cubic-bezier(.2,.8,.2,1)" : "none";
     sheetEl.style.transform = "translateY(" + off + "px)";
   }
+  function nearestDetent(frac) {
+    let best = SHEET_DETENTS[0], dist = Infinity;
+    for (const d of SHEET_DETENTS) { const dd = Math.abs(frac - d); if (dd < dist) { dist = dd; best = d; } }
+    return best;
+  }
+  // pos 를 적용하고 기기별로 기억(sheetPos). '열림'(pos<1)일 땐 마지막 열림 높이도 저장.
+  function setSheetPos(pos, animate) {
+    sheetPos = pos;
+    applySheet(pos * closedOffset(), animate !== false);
+    sheetHandle.classList.toggle("open", pos < 1);
+    if (pos < 1) { kb.blur(); settings.sheetOpenPos = pos; }
+    settings.sheetPos = pos;
+    saveSettings();
+  }
   function setSheet(open) {
-    sheetOpen = open;
-    applySheet(open ? 0 : closedOffset(), true);
-    sheetHandle.classList.toggle("open", open);
-    if (open) kb.blur();
+    setSheetPos(open ? (settings.sheetOpenPos != null ? settings.sheetOpenPos : 0) : 1);
   }
   sheetHandle.addEventListener("touchstart", (e) => {
-    sheetDrag = { y: e.touches[0].clientY, startOff: sheetOpen ? 0 : closedOffset(), moved: false };
+    sheetDrag = { y: e.touches[0].clientY, startOff: sheetPos * closedOffset(), moved: false };
   }, { passive: true });
   sheetHandle.addEventListener("touchmove", (e) => {
     if (!sheetDrag) return;
@@ -142,11 +158,12 @@
   }, { passive: false });
   sheetHandle.addEventListener("touchend", () => {
     if (!sheetDrag) return;
-    if (!sheetDrag.moved) setSheet(!sheetOpen);            // 탭 = 토글
-    else setSheet(sheetCurOff < closedOffset() / 2);       // 드래그 = 위치로 스냅
+    if (!sheetDrag.moved) setSheet(!sheetOpenNow());          // 탭 = 열기/닫기 토글
+    else setSheetPos(nearestDetent(sheetCurOff / Math.max(closedOffset(), 1)));  // 드래그 = 가까운 디텐트로 스냅
     sheetDrag = null;
   });
-  window.addEventListener("resize", () => applySheet(sheetOpen ? 0 : closedOffset(), false));
+  window.addEventListener("resize", () => applySheet(sheetPos * closedOffset(), false));
+  setSheetPos(sheetPos, false);   // 시작 시 기억된 높이 복원
 
   // 좌/우 클릭 버튼 — 누르고 있으면 마우스 버튼이 '눌린 채' 유지.
   // → 좌클릭 누른 채 다른 손가락으로 트랙패드 드래그하면 진짜 드래그-선택.
