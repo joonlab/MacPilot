@@ -29,6 +29,8 @@ enum EventInjector {
                 postMouse(upType, at: pos, button: downButton, clickState: 1)
                 isMouseDown = false
             }
+            stopMoveLoop()
+            hasCursor = false   // 다음 세션에서 물리 커서 위치로 재동기화
         }
     }
 
@@ -84,16 +86,85 @@ enum EventInjector {
         CGEvent(source: nil)?.location ?? .zero
     }
 
-    /// 이동. 버튼이 눌려 있으면 드래그(mouseDragged), 아니면 단순 이동(mouseMoved).
+    // MARK: - 부드러운 이동 (서브픽셀 가상 커서 + 적응형 등속 보간)
+    // 받은 델타를 즉시 점프시키지 않고, 서브픽셀 정밀도의 가상 목표(targetPos)에 누적한 뒤
+    // 120Hz 타이머가 실제 커서를 '측정된 패킷 간격'에 맞춰 등속으로 따라가게 한다.
+    // → 전송 이산화(계단)·도착 지터를 흡수. 좋은 망(고Hz)에선 프레임당 목표에 바로 도달해 지연 ≈ 0.
+    // (johnfkoo951(구요한)님 CmdPilot 포크에서 이식)
+    private static var renderPos = CGPoint.zero        // 화면에 실제 보내는 위치 (Double = 서브픽셀 보존)
+    private static var targetPos = CGPoint.zero        // 누적 목표 (서브픽셀)
+    private static var hasCursor = false
+    private static var lastPacketTime: CFTimeInterval = 0
+    private static var interArrival: Double = 1.0 / 90.0   // 패킷 도착 간격 EMA(초)
+    private static var moveTimer: DispatchSourceTimer?
+    private static var idleFrames = 0
+    private static let stepHz: Double = 120
+    private static let followGain: Double = 1.5        // 보간 꼬리 단축 (>1)
+    private static let idleEps: Double = 0.04          // 도달 판정(px)
+    private static let resyncDist: Double = 8.0        // 물리마우스 개입 감지 임계(px)
+
+    /// 상대 이동. 목표점(targetPos)에 누적하고 보간 루프가 부드럽게 따라간다.
     private static func move(dx: Double, dy: Double) {
-        let cur = currentLocation()   // 위치 조회는 한 번만 (이벤트당 syscall 절감)
-        let target = clampToDisplays(CGPoint(x: cur.x + dx, y: cur.y + dy))
+        let t = CFAbsoluteTimeGetCurrent()
+        // 물리 마우스/타 앱이 커서를 옮겼으면 베이스 재동기화 (가상커서 desync 방지)
+        let real = currentLocation()
+        if !hasCursor || hypot(real.x - renderPos.x, real.y - renderPos.y) > resyncDist {
+            renderPos = real; targetPos = real; hasCursor = true
+        }
+        // 패킷 간격 EMA — 보간 지속시간을 여기에 맞춰 지연을 자동 스케일
+        if lastPacketTime > 0 {
+            let d = t - lastPacketTime
+            if d > 0.002 && d < 0.2 { interArrival = interArrival * 0.8 + d * 0.2 }
+        }
+        lastPacketTime = t
+        targetPos = clampToDisplays(CGPoint(x: targetPos.x + dx, y: targetPos.y + dy))
+        idleFrames = 0
+        startMoveLoop()
+    }
+
+    private static func startMoveLoop() {
+        guard moveTimer == nil else { return }
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now(), repeating: 1.0 / stepHz, leeway: .milliseconds(1))
+        timer.setEventHandler { stepMove() }
+        moveTimer = timer
+        timer.resume()
+    }
+
+    private static func stopMoveLoop() {
+        moveTimer?.cancel(); moveTimer = nil; idleFrames = 0
+    }
+
+    private static func stepMove() {
+        let remX = targetPos.x - renderPos.x
+        let remY = targetPos.y - renderPos.y
+        if hypot(remX, remY) < idleEps {
+            idleFrames += 1
+            if idleFrames > 8 { stopMoveLoop() }   // 목표 도달 후 유휴면 정지 (유휴 CPU 0)
+            return
+        }
+        idleFrames = 0
+        // 이번 스텝 몫: 남은 거리를 '패킷 간격' 안에 도달하도록. 고Hz면 frac→1(즉시=지연0), 저Hz면 등속 분산.
+        let interval = 1.0 / stepHz
+        let frac = min(1.0, interval * followGain / max(interArrival, interval))
+        renderPos.x += remX * frac
+        renderPos.y += remY * frac
+        postAtRenderPos()
+    }
+
+    private static func postAtRenderPos() {
+        let p = CGPoint(x: renderPos.x.rounded(), y: renderPos.y.rounded())  // 소수부는 renderPos에 보존
         if isMouseDown {
             let dragType: CGEventType = downButton == .right ? .rightMouseDragged : .leftMouseDragged
-            postMouse(dragType, at: target, button: downButton, clickState: 1)
+            postMouse(dragType, at: p, button: downButton, clickState: 1)
         } else {
-            postMouse(.mouseMoved, at: target, button: .left, clickState: 1)
+            postMouse(.mouseMoved, at: p, button: .left, clickState: 1)
         }
+    }
+
+    /// 커서 베이스를 특정 위치로 재동기화 (클릭/드래그 경계 좌표 코히런스 유지)
+    private static func syncCursorBase(_ p: CGPoint) {
+        renderPos = p; targetPos = p; hasCursor = true
     }
 
     private static func mouseDown(right: Bool, clickState: Int) {
@@ -102,6 +173,7 @@ enum EventInjector {
         isMouseDown = true
         let downType: CGEventType = right ? .rightMouseDown : .leftMouseDown
         postMouse(downType, at: pos, button: downButton, clickState: max(1, clickState))
+        syncCursorBase(pos)   // 드래그 시작점에 가상커서 정렬 → 이후 보간 이동이 여기서 출발
     }
 
     private static func mouseUp() {
@@ -109,6 +181,7 @@ enum EventInjector {
         let upType: CGEventType = downButton == .right ? .rightMouseUp : .leftMouseUp
         postMouse(upType, at: pos, button: downButton, clickState: 1)
         isMouseDown = false
+        syncCursorBase(pos)   // 드래그 종료점에 가상커서 정렬 → 다음 이동이 튀지 않게
     }
 
     /// 클릭. count 가 2면 더블클릭, 3이면 트리플클릭(clickState 필드로 OS에 알림).

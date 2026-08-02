@@ -39,7 +39,7 @@
 
   // ───────── 설정 (감도 등, 기기별 localStorage) ─────────
   const SETTINGS_KEY = "macpilot.settings.v1";
-  const SETTINGS_DEFAULTS = { moveSpeed: 1.1, accel: 0.05, scrollSpeed: 1.0, scrollDir: 1, theme: "dark", sheetPos: 0, sheetOpenPos: 0 };
+  const SETTINGS_DEFAULTS = { moveSpeed: 1.1, accel: 0.05, scrollSpeed: 1.0, scrollDir: 1, theme: "dark", sheetPos: 0, sheetOpenPos: 0, pointerHz: 60, pointerSmoothing: 0.16, resolutionScale: 1.0 };
   let settings = loadSettings();
   function loadSettings() {
     try { const r = localStorage.getItem(SETTINGS_KEY); if (r) return Object.assign({}, SETTINGS_DEFAULTS, JSON.parse(r)); } catch (e) {}
@@ -163,7 +163,6 @@
     sheetDrag = null;
   });
   window.addEventListener("resize", () => applySheet(sheetPos * closedOffset(), false));
-  setSheetPos(sheetPos, false);   // 시작 시 기억된 높이 복원
 
   // 좌/우 클릭 버튼 — 누르고 있으면 마우스 버튼이 '눌린 채' 유지.
   // → 좌클릭 누른 채 다른 손가락으로 트랙패드 드래그하면 진짜 드래그-선택.
@@ -745,6 +744,79 @@
   const FRICTION = 0.92, MOMENTUM_MIN = 0.04;
   const SWIPE3_THRESH = 45, PINCH_DECIDE = 12, ZOOM_STEP = 0.12;
 
+  // ───────── 커서 스무딩 (1€ 필터 + 프레임 전송 큐) ─────────
+  // 트랙패드 델타를 그대로 보내는 대신 1€ 필터로 지터를 눌러 커서를 부드럽게 한다.
+  // (johnfkoo951(구요한)님 CmdPilot 포크에서 이식)
+  class LowPass {
+    constructor() { this.s = null; this.init = false; }
+    filter(x, a) { this.s = this.init ? a * x + (1 - a) * this.s : x; this.init = true; return this.s; }
+    reset() { this.s = null; this.init = false; }
+  }
+  class OneEuro {
+    constructor(mc, beta, dc) { this.mc = mc; this.beta = beta; this.dc = dc; this.xf = new LowPass(); this.dxf = new LowPass(); this.tPrev = null; this.xPrev = 0; }
+    alpha(cut, dt) { const tau = 1 / (2 * Math.PI * cut); return 1 / (1 + tau / dt); }
+    filter(x, t) {
+      if (this.tPrev === null) { this.tPrev = t; this.xPrev = x; return this.xf.filter(x, 1); }
+      let dt = t - this.tPrev; if (dt <= 0) dt = 1e-3; this.tPrev = t;
+      const dx = (x - this.xPrev) / dt; this.xPrev = x;
+      const edx = this.dxf.filter(dx, this.alpha(this.dc, dt));
+      const cut = this.mc + this.beta * Math.abs(edx);
+      return this.xf.filter(x, this.alpha(cut, dt));
+    }
+    reset() { this.xf.reset(); this.dxf.reset(); this.tPrev = null; this.xPrev = 0; }
+    tune(mc, beta) { this.mc = mc; this.beta = beta; }
+  }
+  let euroX = new OneEuro(1.0, 0.02, 1.0), euroY = new OneEuro(1.0, 0.02, 1.0);
+  let rawX = 0, rawY = 0, filtLastX = 0, filtLastY = 0;
+  function resetMotionFilter() { euroX.reset(); euroY.reset(); rawX = rawY = filtLastX = filtLastY = 0; }
+  // pointerSmoothing(0~0.45) → 필터 강도. 값이 클수록 컷오프↓(더 부드럽지만 약간 뭉근).
+  function tuneEuroFromSettings() {
+    const s = clampNum(settings.pointerSmoothing || 0.1, 0, 0.45);
+    const mc = Math.max(0.5, 2.2 - s * 5.0);
+    const beta = Math.max(0.006, 0.03 - s * 0.05);
+    euroX.tune(mc, beta); euroY.tune(mc, beta);
+  }
+
+  // 프레임 단위로 델타를 모아 일정 주기(pointerHz)로 전송. 스무딩은 위 1€ 필터가 담당.
+  let motionTimer = null, lastMotionFlush = 0;
+  let pendingMove = { dx: 0, dy: 0 }, pendingScroll = { dx: 0, dy: 0 };
+  function motionInterval() { return 1000 / clampNum(settings.pointerHz || 60, 24, 120); }
+  function motionScale() { return clampNum(settings.resolutionScale || 1, 0.5, 2); }
+  function scheduleMotion() {
+    if (motionTimer) return;
+    const wait = motionInterval() - (performance.now() - lastMotionFlush);
+    if (wait <= 1) { flushMotionFrame(performance.now()); return; }   // 리딩엣지: 주기 지났으면 즉시
+    motionTimer = setTimeout(() => { motionTimer = null; flushMotionFrame(performance.now()); }, wait);
+  }
+  function queueMove(dx, dy) {
+    const scale = motionScale();
+    const t = performance.now() / 1000;
+    rawX += dx * scale; rawY += dy * scale;
+    const fx = euroX.filter(rawX, t), fy = euroY.filter(rawY, t);   // 1€ 필터 경유
+    pendingMove.dx += fx - filtLastX; pendingMove.dy += fy - filtLastY;   // 필터 위치의 '차분'을 델타로
+    filtLastX = fx; filtLastY = fy;
+    scheduleMotion();
+  }
+  function queueScroll(dx, dy) { pendingScroll.dx += dx; pendingScroll.dy += dy; scheduleMotion(); }
+  function flushMotion(immediate) {
+    if (motionTimer) { clearTimeout(motionTimer); motionTimer = null; }
+    if (immediate) {
+      if (Math.abs(pendingMove.dx) > 0.01 || Math.abs(pendingMove.dy) > 0.01) send({ t: "move", dx: pendingMove.dx, dy: pendingMove.dy });
+      if (Math.abs(pendingScroll.dx) > 0.01 || Math.abs(pendingScroll.dy) > 0.01) send({ t: "scroll", dx: pendingScroll.dx, dy: pendingScroll.dy });
+      pendingMove = { dx: 0, dy: 0 }; pendingScroll = { dx: 0, dy: 0 };
+      lastMotionFlush = performance.now();
+      return;
+    }
+    flushMotionFrame(performance.now());
+  }
+  function flushMotionFrame(t) {
+    motionTimer = null;
+    lastMotionFlush = t || performance.now();
+    if (Math.abs(pendingScroll.dx) > 0.01 || Math.abs(pendingScroll.dy) > 0.01) { send({ t: "scroll", dx: pendingScroll.dx, dy: pendingScroll.dy }); pendingScroll = { dx: 0, dy: 0 }; }
+    if (Math.abs(pendingMove.dx) > 0.01 || Math.abs(pendingMove.dy) > 0.01) { send({ t: "move", dx: pendingMove.dx, dy: pendingMove.dy }); pendingMove = { dx: 0, dy: 0 }; }
+  }
+  tuneEuroFromSettings();
+
   const pad = document.getElementById("trackpad");
   let startTime = 0, moved = false, maxTouches = 0;
   let dragging = false, armedForDrag = false;
@@ -765,7 +837,7 @@
       const dt = Math.min(t - prev, 32); prev = t;
       scrollVX *= FRICTION; scrollVY *= FRICTION;
       if (Math.hypot(scrollVX, scrollVY) < MOMENTUM_MIN) { momentumRAF = null; return; }
-      send({ t: "scroll", dx: scrollVX * dt * settings.scrollSpeed * settings.scrollDir, dy: scrollVY * dt * settings.scrollSpeed * settings.scrollDir });
+      queueScroll(scrollVX * dt * settings.scrollSpeed * settings.scrollDir, scrollVY * dt * settings.scrollSpeed * settings.scrollDir);
       momentumRAF = requestAnimationFrame(step);
     };
     momentumRAF = requestAnimationFrame(step);
@@ -775,11 +847,12 @@
     const dx = g3last.x - g3start.x, dy = g3last.y - g3start.y;
     if (Math.hypot(dx, dy) < SWIPE3_THRESH) return;
     const dir = Math.abs(dx) > Math.abs(dy) ? (dx < 0 ? "left" : "right") : (dy < 0 ? "up" : "down");
+    flushMotion(true);   // 이동 잔여를 먼저 비워 제스처와 안 섞이게
     send({ t: "gesture", dir }); g3fired = true;
   }
 
   pad.addEventListener("touchstart", (e) => {
-    e.preventDefault(); stopMomentum();
+    e.preventDefault(); stopMomentum(); resetMotionFilter();
     const n = e.touches.length;
     if (n === 1) {
       startTime = now(); moved = false; maxTouches = 1; dragging = false;
@@ -811,7 +884,7 @@
           const dx = c.x - lastCentroid.x, dy = c.y - lastCentroid.y;
           const t = now(), dt = Math.max(t - lastScrollMoveT, 1);
           scrollVX = 0.6 * scrollVX + 0.4 * (dx / dt); scrollVY = 0.6 * scrollVY + 0.4 * (dy / dt); lastScrollMoveT = t;
-          if (Math.abs(dx) > 0.1 || Math.abs(dy) > 0.1) send({ t: "scroll", dx: dx * settings.scrollSpeed * settings.scrollDir, dy: dy * settings.scrollSpeed * settings.scrollDir });
+          if (Math.abs(dx) > 0.1 || Math.abs(dy) > 0.1) queueScroll(dx * settings.scrollSpeed * settings.scrollDir, dy * settings.scrollSpeed * settings.scrollDir);
         }
       }
       lastCentroid = c; moved = true; armedForDrag = false;
@@ -821,8 +894,8 @@
       if (Math.abs(dx) > TAP_MOVE || Math.abs(dy) > TAP_MOVE) moved = true;
       if (armedForDrag && !dragging && moved) { dragging = true; send({ t: "down", button: "left" }); }
       if (dx !== 0 || dy !== 0) {
-        if (dragging) send({ t: "move", dx: dx * settings.moveSpeed, dy: dy * settings.moveSpeed });
-        else { const speed = Math.hypot(dx, dy); const f = settings.moveSpeed * (1 + Math.min(speed, ACCEL_CAP) * settings.accel); send({ t: "move", dx: dx * f, dy: dy * f }); }
+        if (dragging) queueMove(dx * settings.moveSpeed, dy * settings.moveSpeed);
+        else { const speed = Math.hypot(dx, dy); const f = settings.moveSpeed * (1 + Math.min(speed, ACCEL_CAP) * settings.accel); queueMove(dx * f, dy * f); }
       }
       last = { x, y };
     }
@@ -836,7 +909,7 @@
       return;
     }
     if (e.touches.length === 0) {
-      if (dragging) { send({ t: "up", button: "left" }); dragging = false; }
+      if (dragging) { flushMotion(true); send({ t: "up", button: "left" }); dragging = false; }
       else {
         const duration = now() - startTime;
         if (!moved && duration < TAP_MS && !buttonHeld()) {
@@ -854,13 +927,13 @@
 
   pad.addEventListener("touchcancel", () => {
     if (threeMode) fireSwipeIfNeeded();
-    if (dragging) { send({ t: "up", button: "left" }); dragging = false; }
+    if (dragging) { flushMotion(true); send({ t: "up", button: "left" }); dragging = false; }
     threeMode = false; g3fired = false; g3start = null; g3last = null; twoMode = null;
     last = null; lastCentroid = null; maxTouches = 0; armedForDrag = false;
   }, { passive: false });
 
   renderDeck();
-  applySheet(0, false);                 // 시작 시 트랙패드 시트 열림
+  setSheetPos(sheetPos, false);         // 시작 시 기억된 트랙패드 시트 높이로 복원(레이아웃 확정 후)
   sheetHandle.classList.add("open");
   connect();
 })();
