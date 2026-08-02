@@ -135,8 +135,9 @@ final class HelperServer: ObservableObject {
                 DispatchQueue.main.async { [weak self] in self?.activeClients = n }
             }
         }
-        client.onClose = { [weak self] in
+        client.onClose = { [weak self, weak client] in
             EventInjector.releaseAll()  // 드래그 중 연결이 끊겨도 버튼이 눌린 채 남지 않도록
+            if #available(macOS 14.0, *), let client { ScreenStreamer.shared.removeViewer(client) }  // 미러 뷰어 해제
             guard let self else { return }
             self.serverQueue.async { [weak self] in
                 guard let self else { return }
@@ -177,6 +178,20 @@ final class HelperServer: ObservableObject {
                 DispatchQueue.main.async {
                     client?.sendText("{\"t\":\"apps\",\"list\":\(AppList.json())}")
                 }
+            }
+            return
+        case "mirror":
+            // 맥 화면 실시간 미러링 (뷰어 등록/해제/적응 파라미터/디스플레이 선택)
+            guard #available(macOS 14.0, *), let client else { return }
+            switch command.action {
+            case "start":
+                if let d = command.display { ScreenStreamer.shared.selectDisplay(CGDirectDisplayID(d), requester: client) }
+                ScreenStreamer.shared.addViewer(client)
+            case "stop":     ScreenStreamer.shared.removeViewer(client)
+            case "config":   ScreenStreamer.shared.configure(longEdge: command.w, fps: command.fps, quality: command.q)
+            case "displays": ScreenStreamer.shared.sendDisplays(to: client)
+            case "select":   ScreenStreamer.shared.selectDisplay(command.display.map { CGDirectDisplayID($0) }, requester: client)
+            default: break
             }
             return
         default:

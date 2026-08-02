@@ -342,6 +342,26 @@ final class HTTPWebSocketConnection {
         connection.send(content: data, completion: .contentProcessed { _ in })
     }
 
+    /// 서버 → 클라이언트 바이너리 프레임(opcode 0x2, 미러 영상). completion(true=성공)으로 백프레셔를 건다.
+    /// 스트리머는 completion 이 올 때까지 다음 프레임 인코딩을 미루고, 그 사이 프레임은 버린다.
+    func sendBinary(_ payload: Data, completion: @escaping (Bool) -> Void) {
+        var header: [UInt8] = [0x80 | 0x2]           // FIN=1, opcode=0x2(binary)
+        let n = payload.count
+        if n < 126 {
+            header.append(UInt8(n))
+        } else if n < 65536 {
+            header.append(126)
+            header.append(UInt8((n >> 8) & 0xff))
+            header.append(UInt8(n & 0xff))
+        } else {
+            header.append(127)
+            for i in (0..<8).reversed() { header.append(UInt8((n >> (8 * i)) & 0xff)) }
+        }
+        var data = Data(header)
+        data.append(payload)
+        connection.send(content: data, completion: .contentProcessed { error in completion(error == nil) })
+    }
+
     // MARK: - 유틸
 
     private func indexOfCRLFCRLF(_ b: [UInt8]) -> Int? {

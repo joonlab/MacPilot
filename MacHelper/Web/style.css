@@ -97,6 +97,27 @@ main { flex: 1; min-height: 0; position: relative; overflow: hidden; }
 .media-bar button { flex: 1; padding: 11px 0; background: var(--surface-2); color: var(--text); border: none; border-radius: 10px; font-size: 18px; }
 .media-bar button:active { background: var(--accent); }
 .media-div { width: 1px; height: 22px; background: var(--border); margin: 0 4px; flex: 0 0 auto; }
+
+/* 미러 */
+#panel-mirror { padding: 0 12px 12px; }
+.mirror-bar { display: flex; align-items: center; gap: 8px; padding-top: 12px; }
+.mirror-status { font-size: 12px; color: var(--text-dim); flex: 0 0 auto; white-space: nowrap; }
+.mirror-monitors { flex: 1; display: flex; gap: 6px; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.mon-tab { flex: 0 0 auto; padding: 6px 10px; background: var(--surface-2); color: var(--text-dim); border: none; border-radius: 8px; font-size: 12px; white-space: nowrap; }
+.mon-tab.on { background: var(--accent); color: var(--accent-text); font-weight: 600; }
+.mirror-btn { flex: 0 0 auto; padding: 6px 11px; background: var(--surface-2); color: var(--text); border: none; border-radius: 8px; font-size: 15px; }
+.mirror-btn:active { background: var(--accent); color: var(--accent-text); }
+.mirror-stage { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; background: #000; border-radius: 12px; overflow: hidden; margin-top: 10px; touch-action: none; }
+#mirror-canvas { max-width: 100%; max-height: 100%; object-fit: contain; touch-action: none; }
+/* 전체화면: 미러 패널을 화면 전체로 */
+:root.mirror-full #tabbar, :root.mirror-full #bar { display: none; }
+:root.mirror-full #panel-mirror { position: fixed; inset: 0; z-index: 100; padding: 0; background: #000; }
+:root.mirror-full .mirror-bar { position: absolute; top: env(safe-area-inset-top); left: 0; right: 0; z-index: 2; padding: 8px 12px; background: linear-gradient(rgba(0,0,0,.55), transparent); }
+:root.mirror-full .mirror-stage { margin: 0; border-radius: 0; height: 100%; }
+
+/* 토스트 알림(미러 권한/상태 등) */
+#toast { position: fixed; left: 50%; bottom: 96px; transform: translateX(-50%) translateY(8px); background: rgba(20,20,22,0.92); color: #fff; padding: 10px 16px; border-radius: 12px; font-size: 14px; font-weight: 600; opacity: 0; pointer-events: none; transition: opacity .18s ease, transform .18s ease; z-index: 9999; max-width: 80vw; text-align: center; }
+#toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 .deck-head { display: flex; align-items: center; gap: 8px; padding-top: 10px; }
 .folder-tabs { flex: 1; display: flex; gap: 6px; overflow-x: auto; -webkit-overflow-scrolling: touch; }
 .folder-tab { flex: 0 0 auto; padding: 7px 13px; background: var(--surface-2); color: var(--text-dim); border: none; border-radius: 9px; font-size: 13px; white-space: nowrap; }

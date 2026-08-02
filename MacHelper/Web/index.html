@@ -68,6 +68,18 @@
       <div id="page-dots" class="page-dots"></div>
     </section>
 
+    <!-- 미러 -->
+    <section id="panel-mirror" class="panel">
+      <div class="mirror-bar">
+        <span id="mirror-status" class="mirror-status">준비 중…</span>
+        <div id="mirror-monitors" class="mirror-monitors"></div>
+        <button id="mirror-full" class="mirror-btn" aria-label="전체화면">⛶</button>
+      </div>
+      <div id="mirror-stage" class="mirror-stage">
+        <canvas id="mirror-canvas"></canvas>
+      </div>
+    </section>
+
     <!-- 트랙패드 시트 (어디서나 핸들로 끌어올려 소환) -->
     <div id="tp-sheet">
       <div id="tp-handle"><span class="grab"></span><span class="lbl">트랙패드</span></div>
@@ -84,6 +96,7 @@
   <nav id="tabbar">
     <button class="tab" data-tab="keyboard"><span>⌨︎</span>키보드</button>
     <button class="tab active" data-tab="deck"><span>⊞</span>덱</button>
+    <button class="tab" data-tab="mirror"><span>🖥</span>미러</button>
   </nav>
 
   <div id="modal-root"></div>

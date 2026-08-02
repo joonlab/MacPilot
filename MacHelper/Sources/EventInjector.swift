@@ -56,6 +56,16 @@ enum EventInjector {
             runMacro(command.steps ?? [])
         case "launch":
             launch(command.target ?? "")
+        case "mmove":
+            absMove(command.nx ?? 0, command.ny ?? 0)
+        case "mdown":
+            absDown(command.nx ?? 0, command.ny ?? 0, right: command.button == "right")
+        case "mup":
+            mouseUp()
+        case "mtap":
+            absTap(command.nx ?? 0, command.ny ?? 0, right: command.button == "right", count: command.count ?? 1)
+        case "mscroll":
+            absScroll(command.nx ?? 0, command.ny ?? 0, dx: command.dx ?? 0, dy: command.dy ?? 0)
         case "gesture":
             gesture(command.dir ?? "")
         case "zoom":
@@ -165,6 +175,53 @@ enum EventInjector {
     /// 커서 베이스를 특정 위치로 재동기화 (클릭/드래그 경계 좌표 코히런스 유지)
     private static func syncCursorBase(_ p: CGPoint) {
         renderPos = p; targetPos = p; hasCursor = true
+    }
+
+    // MARK: - 절대좌표 (화면 미러 탭/드래그/스크롤)
+    // 정규화 좌표(0..1, 캡처 디스플레이 기준 top-left) → 전역 CGEvent 좌표.
+
+    private static func mapNorm(_ nx: Double, _ ny: Double) -> CGPoint {
+        let b: CGRect
+        if #available(macOS 14.0, *), let db = ScreenStreamer.shared.displayBounds { b = db }
+        else { b = CGDisplayBounds(CGMainDisplayID()) }
+        let cx = b.minX + max(0, min(1, nx)) * b.width
+        let cy = b.minY + max(0, min(1, ny)) * b.height
+        return clampToDisplays(CGPoint(x: cx, y: cy))
+    }
+
+    private static func absMove(_ nx: Double, _ ny: Double) {
+        let p = mapNorm(nx, ny)
+        syncCursorBase(p)   // 미러 조작은 상대이동 보간과 별개 — 베이스도 맞춰둔다
+        if isMouseDown {
+            let drag: CGEventType = downButton == .right ? .rightMouseDragged : .leftMouseDragged
+            postMouse(drag, at: p, button: downButton, clickState: 1)
+        } else {
+            postMouse(.mouseMoved, at: p, button: .left, clickState: 1)
+        }
+    }
+
+    private static func absDown(_ nx: Double, _ ny: Double, right: Bool) {
+        let p = mapNorm(nx, ny)
+        syncCursorBase(p)
+        downButton = right ? .right : .left
+        isMouseDown = true
+        postMouse(right ? .rightMouseDown : .leftMouseDown, at: p, button: downButton, clickState: 1)
+    }
+
+    private static func absTap(_ nx: Double, _ ny: Double, right: Bool, count: Int) {
+        let p = mapNorm(nx, ny)
+        syncCursorBase(p)
+        let state = max(1, count)
+        let (d, u, btn): (CGEventType, CGEventType, CGMouseButton) =
+            right ? (.rightMouseDown, .rightMouseUp, .right) : (.leftMouseDown, .leftMouseUp, .left)
+        postMouse(.mouseMoved, at: p, button: .left, clickState: 1)  // 커서 이동 후 클릭(hover 반영)
+        postMouse(d, at: p, button: btn, clickState: state)
+        postMouse(u, at: p, button: btn, clickState: state)
+    }
+
+    private static func absScroll(_ nx: Double, _ ny: Double, dx: Double, dy: Double) {
+        postMouse(.mouseMoved, at: mapNorm(nx, ny), button: .left, clickState: 1)  // 스크롤 대상 위로 커서
+        scroll(dx: dx, dy: dy)
     }
 
     private static func mouseDown(right: Bool, clickState: Int) {

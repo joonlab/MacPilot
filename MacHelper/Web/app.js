@@ -8,10 +8,12 @@
 
   function connect() {
     ws = new WebSocket(`ws://${location.host}/ws`);
+    ws.binaryType = "arraybuffer";   // 미러 영상 프레임(바이너리) 수신용
     ws.onopen = () => { setStatus(true); send({ t: "hello", name: "Safari" }); send({ t: "getDeck" }); };
     ws.onclose = () => { setStatus(false); scheduleReconnect(); };
     ws.onerror = () => { try { ws.close(); } catch (e) {} };
     ws.onmessage = (ev) => {
+      if (ev.data instanceof ArrayBuffer) { onMirrorFrame(ev.data); return; }   // 미러 프레임
       try {
         const m = JSON.parse(ev.data);
         if (m.t === "deck") {
@@ -20,6 +22,12 @@
         } else if (m.t === "apps") {
           installedApps = m.list || [];
           if (appsPickerRefresh) appsPickerRefresh();
+        } else if (m.t === "mirrorInfo") {
+          mirror.dispW = m.dispW; mirror.dispH = m.dispH; setMirrorStatus("미러링 중");
+        } else if (m.t === "mirrorDisplays") {
+          renderMonitorTabs(m.displays || []);
+        } else if (m.t === "mirror" && m.error) {
+          setMirrorStatus("화면 기록 권한 필요"); toast(m.error);
         }
       } catch (e) {}
     };
@@ -39,7 +47,7 @@
 
   // ───────── 설정 (감도 등, 기기별 localStorage) ─────────
   const SETTINGS_KEY = "macpilot.settings.v1";
-  const SETTINGS_DEFAULTS = { moveSpeed: 1.1, accel: 0.05, scrollSpeed: 1.0, scrollDir: 1, theme: "dark", sheetPos: 0, sheetOpenPos: 0, pointerHz: 60, pointerSmoothing: 0.16, resolutionScale: 1.0 };
+  const SETTINGS_DEFAULTS = { moveSpeed: 1.1, accel: 0.05, scrollSpeed: 1.0, scrollDir: 1, theme: "dark", sheetPos: 0, sheetOpenPos: 0, pointerHz: 60, pointerSmoothing: 0.16, resolutionScale: 1.0, mirrorQuality: "auto" };
   let settings = loadSettings();
   function loadSettings() {
     try { const r = localStorage.getItem(SETTINGS_KEY); if (r) return Object.assign({}, SETTINGS_DEFAULTS, JSON.parse(r)); } catch (e) {}
@@ -47,6 +55,16 @@
   }
   function saveSettings() { try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch (e) {} }
   function clampNum(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+  function buzz() { try { if (navigator.vibrate) navigator.vibrate(8); } catch (e) {} }
+  let latencyMs = null;   // 네트워크 RTT ping 미도입 → 미러 화질은 기본 티어 사용
+  // 가벼운 토스트 알림(미러 권한/상태 등)
+  let toastTimer;
+  function toast(msg) {
+    let el = document.getElementById("toast");
+    if (!el) { el = document.createElement("div"); el.id = "toast"; document.body.appendChild(el); }
+    el.textContent = msg; el.classList.add("show");
+    clearTimeout(toastTimer); toastTimer = setTimeout(() => el.classList.remove("show"), 2000);
+  }
 
   // 테마 적용 (system 이면 기기 설정 따라감) + 로고도 테마에 맞게 교체
   const themeMQ = window.matchMedia("(prefers-color-scheme: dark)");
@@ -109,6 +127,7 @@
       document.querySelectorAll(".panel").forEach((p) => p.classList.toggle("active", p.id === "panel-" + name));
       if (name === "keyboard") setTimeout(() => kb.focus(), 50); else kb.blur();
       if (name === "deck") renderDeck();
+      if (name === "mirror") { mirrorInit(); startMirror(); } else { stopMirror(); document.documentElement.classList.remove("mirror-full"); }
     });
   });
 
@@ -931,6 +950,144 @@
     threeMode = false; g3fired = false; g3start = null; g3last = null; twoMode = null;
     last = null; lastCentroid = null; maxTouches = 0; armedForDrag = false;
   }, { passive: false });
+
+  // ═════════ 화면 미러링 ═════════
+  // 맥 화면을 canvas에 실시간 표시하고, 탭/드래그/스크롤을 절대좌표로 맥에 주입.
+  // (johnfkoo951(구요한)님 CmdPilot 포크에서 이식 — 표시+탭클릭+드래그+2핑거 스크롤+모니터 선택)
+  const mirror = { canvas: null, ctx: null, active: false, pending: null, decoding: false, display: null, dispW: 0, dispH: 0 };
+  function setMirrorStatus(s) { const el = document.getElementById("mirror-status"); if (el) el.textContent = s; }
+
+  function onMirrorFrame(buf) {
+    // 8바이트 헤더(magic/flags/seq/tMs) 스킵 → JPEG만. 항상 최신 프레임만 보관 → 밀린 건 자연 폐기.
+    mirror.pending = new Blob([new Uint8Array(buf, 8)], { type: "image/jpeg" });
+    if (!mirror.decoding) drainMirror();
+  }
+  async function drainMirror() {
+    if (!mirror.ctx) return;
+    mirror.decoding = true;
+    while (mirror.pending) {
+      const blob = mirror.pending; mirror.pending = null;
+      try {
+        const bmp = await createImageBitmap(blob);   // 오프-메인 디코드
+        if (mirror.canvas.width !== bmp.width) { mirror.canvas.width = bmp.width; mirror.canvas.height = bmp.height; }
+        mirror.ctx.drawImage(bmp, 0, 0);
+        bmp.close();
+      } catch (e) {}
+    }
+    mirror.decoding = false;
+  }
+
+  const MIRROR_TIERS = [
+    { maxRtt: 12, w: 1400, fps: 15, q: 0.62 },
+    { maxRtt: 30, w: 1100, fps: 12, q: 0.55 },
+    { maxRtt: 60, w: 900, fps: 10, q: 0.50 },
+    { maxRtt: Infinity, w: 720, fps: 8, q: 0.45 },
+  ];
+  const MIRROR_QUALITY = { high: { w: 2560, fps: 24, q: 0.75 }, max: { w: 3840, fps: 30, q: 0.90 } };
+  function mirrorConfig() {
+    if (MIRROR_QUALITY[settings.mirrorQuality]) return MIRROR_QUALITY[settings.mirrorQuality];
+    const rtt = latencyMs || 20;
+    return MIRROR_TIERS.find((t) => rtt <= t.maxRtt) || MIRROR_TIERS[MIRROR_TIERS.length - 1];
+  }
+
+  function startMirror() {
+    mirror.active = true;
+    const cfg = mirrorConfig();
+    send({ t: "mirror", action: "config", w: cfg.w, fps: cfg.fps, q: cfg.q });
+    send({ t: "mirror", action: "start", display: mirror.display });
+    send({ t: "mirror", action: "displays" });   // 모니터 목록 요청
+    setMirrorStatus("연결 중…");
+  }
+  function stopMirror() { if (!mirror.active) return; mirror.active = false; send({ t: "mirror", action: "stop" }); }
+
+  function renderMonitorTabs(displays) {
+    const bar = document.getElementById("mirror-monitors");
+    if (!bar) return;
+    bar.innerHTML = "";
+    if (displays.length <= 1) return;   // 모니터 1개면 탭 숨김
+    displays.forEach((d) => {
+      const b = document.createElement("button");
+      b.className = "mon-tab" + (d.current ? " on" : "");
+      b.textContent = d.name.replace(/\s*\(.*\)$/, "");   // 이름만(해상도 생략)
+      b.addEventListener("click", () => {
+        buzz(); mirror.display = d.id;
+        send({ t: "mirror", action: "select", display: d.id });
+        bar.querySelectorAll(".mon-tab").forEach((x) => x.classList.toggle("on", x === b));
+      });
+      bar.appendChild(b);
+    });
+  }
+
+  // canvas 탭 → 절대 클릭. object-fit: contain 레터박스 제외하고 정규화(0..1).
+  function normFromTouch(clientX, clientY) {
+    const el = mirror.canvas, r = el.getBoundingClientRect();
+    if (!el.width || !r.width) return null;
+    const srcAR = el.width / el.height, boxAR = r.width / r.height;
+    let cw = r.width, ch = r.height, ox = 0, oy = 0;
+    if (srcAR > boxAR) { ch = r.width / srcAR; oy = (r.height - ch) / 2; }
+    else { cw = r.height * srcAR; ox = (r.width - cw) / 2; }
+    const x = clientX - r.left - ox, y = clientY - r.top - oy;
+    if (x < 0 || y < 0 || x > cw || y > ch) return null;   // 레터박스 여백 무시
+    return { nx: x / cw, ny: y / ch };
+  }
+
+  function wireMirrorInput() {
+    const el = mirror.canvas;
+    let down = null, moved = false, longTimer = null, dragging = false, panLast = null;
+    const clearLong = () => { if (longTimer) { clearTimeout(longTimer); longTimer = null; } };
+    el.addEventListener("touchstart", (e) => {
+      e.preventDefault();
+      if (e.touches.length === 1) {
+        const n = normFromTouch(e.touches[0].clientX, e.touches[0].clientY);
+        if (!n) { down = null; return; }
+        down = n; moved = false; dragging = false;
+        clearLong();
+        longTimer = setTimeout(() => {   // 길게 누르기 → 우클릭
+          if (!moved && down) { send({ t: "mtap", nx: down.nx, ny: down.ny, button: "right" }); buzz(); down = null; }
+        }, 500);
+      } else if (e.touches.length === 2) {
+        clearLong(); down = null; dragging = false;
+        panLast = { x: (e.touches[0].clientX + e.touches[1].clientX) / 2, y: (e.touches[0].clientY + e.touches[1].clientY) / 2 };
+      }
+    }, { passive: false });
+    el.addEventListener("touchmove", (e) => {
+      e.preventDefault();
+      if (e.touches.length === 2 && panLast) {   // 2핑거 = 스크롤
+        const cx = (e.touches[0].clientX + e.touches[1].clientX) / 2, cy = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+        const n = normFromTouch(cx, cy);
+        if (n) send({ t: "mscroll", nx: n.nx, ny: n.ny, dx: cx - panLast.x, dy: cy - panLast.y });
+        panLast = { x: cx, y: cy };
+        return;
+      }
+      if (e.touches.length === 1 && down) {
+        const n = normFromTouch(e.touches[0].clientX, e.touches[0].clientY);
+        if (!n) return;
+        if (Math.abs(n.nx - down.nx) > 0.008 || Math.abs(n.ny - down.ny) > 0.008) moved = true;
+        if (moved && !dragging) { clearLong(); dragging = true; send({ t: "mdown", nx: down.nx, ny: down.ny }); }
+        if (dragging) send({ t: "mmove", nx: n.nx, ny: n.ny });
+      }
+    }, { passive: false });
+    el.addEventListener("touchend", (e) => {
+      e.preventDefault();
+      clearLong();
+      if (e.touches.length === 0) {
+        if (dragging) { send({ t: "mup" }); dragging = false; }
+        else if (down && !moved) { send({ t: "mtap", nx: down.nx, ny: down.ny }); buzz(); }   // 탭 = 좌클릭
+        down = null; panLast = null;
+      }
+    }, { passive: false });
+    el.addEventListener("touchcancel", () => { clearLong(); if (dragging) { send({ t: "mup" }); dragging = false; } down = null; panLast = null; });
+  }
+
+  function mirrorInit() {
+    if (mirror.ctx) return;   // 1회만 배선
+    mirror.canvas = document.getElementById("mirror-canvas");
+    if (!mirror.canvas) return;
+    mirror.ctx = mirror.canvas.getContext("2d");
+    wireMirrorInput();
+    const full = document.getElementById("mirror-full");
+    if (full) full.addEventListener("click", () => { buzz(); document.documentElement.classList.toggle("mirror-full"); });
+  }
 
   renderDeck();
   setSheetPos(sheetPos, false);         // 시작 시 기억된 트랙패드 시트 높이로 복원(레이아웃 확정 후)
